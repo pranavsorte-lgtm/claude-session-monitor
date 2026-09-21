@@ -3,9 +3,9 @@
 // SessionEnd/UserPromptSubmit) POSTed here by hooks/report.sh.
 // Liveness ("is this window still open") uses `kill -0` on the claude CLI
 // pid the hook script found, so it works in any terminal or multiplexer.
-// iTerm2 AppleScript is an optional bonus layer: nicer window titles and a
-// click-to-focus action, used only when a session reports TERM_PROGRAM
-// "iTerm.app".
+// iTerm2 and Terminal.app AppleScript are optional bonus layers: nicer
+// window titles and a click-to-focus action, gated on the session's
+// reported TERM_PROGRAM ("iTerm.app" or "Apple_Terminal").
 
 const PORT = Number(process.env.CLAUDE_SESSION_MONITOR_PORT ?? 7317);
 
@@ -16,6 +16,7 @@ interface SessionRecord {
   cwd: string;
   termProgram: string;
   itermSessionId: string | null; // uuid only, no window/tab/pane prefix
+  tty: string | null; // e.g. /dev/ttys010; used to focus a Terminal.app tab
   claudePid: string | null;
   model: string | null; // only SessionStart carries this; stale after a mid-session /model switch
   title: string | null; // filled in from iTerm2 poll when available
@@ -55,6 +56,7 @@ function upsert(body: Record<string, unknown>) {
   const existing = sessions.get(sessionId);
   const itermFull = typeof body.iterm_session_id === "string" ? body.iterm_session_id : "";
   const itermUuid = itermFull ? itermFull.split(":").pop() ?? null : existing?.itermSessionId ?? null;
+  const tty = typeof body.tty === "string" && body.tty ? body.tty : existing?.tty ?? null;
   const claudePid = typeof body.claude_pid === "string" && body.claude_pid ? body.claude_pid : existing?.claudePid ?? null;
   const model = typeof body.model === "string" && body.model ? body.model : existing?.model ?? null;
 
@@ -88,6 +90,7 @@ function upsert(body: Record<string, unknown>) {
     cwd: typeof body.cwd === "string" && body.cwd ? body.cwd : existing?.cwd ?? "",
     termProgram: typeof body.term_program === "string" && body.term_program ? body.term_program : existing?.termProgram ?? "",
     itermSessionId: itermUuid,
+    tty,
     claudePid,
     model,
     title: existing?.title ?? null,
@@ -105,8 +108,10 @@ function isAlive(pid: string): boolean {
     // ours to signal. This is the generic, terminal-agnostic liveness check.
     process.kill(Number(pid), 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // EPERM means the process exists but belongs to someone else (we're not
+    // allowed to signal it) — still alive. Only ESRCH means it's gone.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
 
@@ -170,6 +175,65 @@ end tell`;
   }
 }
 
+async function pollTerminalApp() {
+  const hasTerminalAppSessions = Array.from(sessions.values()).some(
+    (rec) => rec.termProgram === "Apple_Terminal" && rec.tty && rec.status !== "closed",
+  );
+  if (!hasTerminalAppSessions) return;
+
+  const script = `
+tell application "Terminal"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & (tty of t) & "\t" & (custom title of t) & linefeed
+    end repeat
+  end repeat
+  return out
+end tell`;
+
+  try {
+    const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
+    const text = await new Response(proc.stdout).text();
+    const live = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      const tab = line.indexOf("\t");
+      if (tab === -1) continue;
+      live.set(line.slice(0, tab).trim(), line.slice(tab + 1).trim());
+    }
+    for (const rec of sessions.values()) {
+      if (!rec.tty) continue;
+      const liveName = live.get(rec.tty);
+      if (liveName) rec.title = liveName;
+    }
+  } catch {
+    // Terminal.app not running or not scriptable this cycle; skip silently.
+  }
+}
+
+const TTY_RE = /^\/dev\/tty[A-Za-z0-9]+$/;
+
+async function focusTerminalAppSession(tty: string): Promise<boolean> {
+  if (!TTY_RE.test(tty)) return false;
+  const script = `
+tell application "Terminal"
+  activate
+  repeat with w in windows
+    repeat with t in tabs of w
+      if (tty of t) is equal to "${tty}" then
+        set selected of t to true
+        set index of w to 1
+        return "ok"
+      end if
+    end repeat
+  end repeat
+  return "not_found"
+end tell`;
+  const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(proc.stdout).text();
+  return out.trim() === "ok";
+}
+
 async function focusIterm2Session(itermSessionId: string): Promise<boolean> {
   if (!UUID_RE.test(itermSessionId)) return false;
   const script = `
@@ -196,6 +260,7 @@ end tell`;
 
 setInterval(checkLiveness, 4000);
 setInterval(() => void pollIterm2(), 4000);
+setInterval(() => void pollTerminalApp(), 4000);
 
 const indexHtml = await Bun.file(new URL("./public/index.html", import.meta.url)).text();
 
@@ -224,8 +289,13 @@ Bun.serve({
 
     if (req.method === "POST" && url.pathname === "/api/focus") {
       const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-      const itermSessionId = String(body.itermSessionId ?? "");
-      const ok = await focusIterm2Session(itermSessionId);
+      const rec = sessions.get(String(body.sessionId ?? ""));
+      let ok = false;
+      if (rec?.termProgram === "iTerm.app" && rec.itermSessionId) {
+        ok = await focusIterm2Session(rec.itermSessionId);
+      } else if (rec?.termProgram === "Apple_Terminal" && rec.tty) {
+        ok = await focusTerminalAppSession(rec.tty);
+      }
       return Response.json({ ok });
     }
 

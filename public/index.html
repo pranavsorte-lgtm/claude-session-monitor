@@ -101,13 +101,19 @@
     return home ? cwd.replace(home[0], "~") : cwd;
   }
 
+  function canFocus(session) {
+    if (session.status === "closed") return false;
+    if (session.termProgram === "iTerm.app") return Boolean(session.itermSessionId);
+    if (session.termProgram === "Apple_Terminal") return Boolean(session.tty);
+    return false;
+  }
+
   async function focus(session) {
-    if (session.status === "closed") return;
-    if (session.termProgram !== "iTerm.app" || !session.itermSessionId) return;
+    if (!canFocus(session)) return;
     await fetch("/api/focus", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itermSessionId: session.itermSessionId }),
+      body: JSON.stringify({ sessionId: session.sessionId }),
     });
   }
 
@@ -127,8 +133,8 @@
     for (const s of list) {
       const card = document.createElement("div");
       card.className = `card ${s.status}`;
-      const canFocus = s.termProgram === "iTerm.app" && s.itermSessionId && s.status !== "closed";
-      card.title = canFocus ? "Click to jump to this window" : "";
+      const focusable = canFocus(s);
+      card.title = focusable ? "Click to jump to this window" : "";
       card.onclick = () => focus(s);
 
       const label = s.title || shortCwd(s.cwd) || s.sessionId.slice(0, 8);
@@ -143,7 +149,7 @@
           ${s.modelDisplay ? `<div class="model-badge">${escapeHtml(s.modelDisplay)}</div>` : ""}
         </div>
         ${s.lastMessage ? `<div class="message">${escapeHtml(s.lastMessage)}</div>` : ""}
-        <div class="meta">${timeAgo(s.updatedAt)}${canFocus ? " · click to jump" : ""}</div>
+        <div class="meta">${timeAgo(s.updatedAt)}${focusable ? " · click to jump" : ""}</div>
       `;
       grid.appendChild(card);
     }

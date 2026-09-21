@@ -6,8 +6,9 @@
 # Works in any terminal: walks the process tree to find the long-lived
 # `claude` CLI process pid, so the server can later check liveness with
 # `kill -0` regardless of which terminal app or multiplexer is in use.
-# ITERM_SESSION_ID/TERM_PROGRAM are included too, only to unlock the iTerm2
-# bonus features (nicer window title, click-to-focus) when present.
+# ITERM_SESSION_ID/tty/TERM_PROGRAM are included too, only to unlock
+# per-terminal bonus features (nicer window title, click-to-focus) for
+# iTerm2 and Terminal.app.
 set -u
 
 PORT="${CLAUDE_SESSION_MONITOR_PORT:-7317}"
@@ -48,6 +49,15 @@ find_claude_pid() {
 
 claude_pid="$(find_claude_pid || true)"
 
+# Terminal.app has no session-id equivalent to iTerm2's, but its AppleScript
+# dictionary exposes each tab's tty, which we can match against the claude
+# process's controlling terminal to focus the right window/tab.
+tty_path=""
+if [[ -n "${claude_pid:-}" ]]; then
+  tty_short="$(ps -o tty= -p "${claude_pid}" 2>/dev/null | tr -d ' ')"
+  [[ -n "${tty_short}" && "${tty_short}" != "??" ]] && tty_path="/dev/${tty_short}"
+fi
+
 # Only SessionStart carries a `model` field directly. Every other event can
 # still recover the current model by reading the last assistant turn's
 # recorded model out of the transcript file, so already-running sessions get
@@ -64,8 +74,9 @@ body="$(jq -c \
   --arg iterm_session_id "${ITERM_SESSION_ID:-}" \
   --arg term_program "${TERM_PROGRAM:-}" \
   --arg claude_pid "${claude_pid:-}" \
+  --arg tty "${tty_path:-}" \
   --arg model_from_transcript "${model_from_transcript:-}" \
-  '. + {iterm_session_id: $iterm_session_id, term_program: $term_program, claude_pid: $claude_pid}
+  '. + {iterm_session_id: $iterm_session_id, term_program: $term_program, claude_pid: $claude_pid, tty: $tty}
    | if $model_from_transcript != "" then .model = $model_from_transcript else . end' \
   <<<"${payload}" 2>/dev/null)"
 

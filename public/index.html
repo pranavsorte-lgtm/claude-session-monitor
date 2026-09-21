@@ -1,0 +1,176 @@
+<title>Claude Sessions</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --needs-input: #f0883e;
+    --done: #3fb950;
+    --working: #58a6ff;
+    --closed: #484f58;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  h1 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 0 0 16px;
+  }
+  #empty {
+    color: var(--dim);
+    font-size: 14px;
+    padding: 40px 0;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--working);
+    border-radius: 8px;
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: transform 0.1s ease;
+  }
+  .card:hover { transform: translateY(-1px); border-color: #5a6270; }
+  .card.needs_input { border-left-color: var(--needs-input); animation: pulse 1.6s ease-in-out infinite; }
+  .card.done { border-left-color: var(--done); }
+  .card.working { border-left-color: var(--working); }
+  .card.closed { border-left-color: var(--closed); opacity: 0.5; cursor: default; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(240, 136, 62, 0.35); }
+    50% { box-shadow: 0 0 0 5px rgba(240, 136, 62, 0); }
+  }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .title { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-badge {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+  }
+  .status-badge.needs_input { background: rgba(240, 136, 62, 0.18); color: var(--needs-input); }
+  .status-badge.done { background: rgba(63, 185, 80, 0.18); color: var(--done); }
+  .status-badge.working { background: rgba(88, 166, 255, 0.18); color: var(--working); }
+  .status-badge.closed { background: rgba(72, 79, 88, 0.25); color: var(--dim); }
+  .cwd { font-size: 11px; color: var(--dim); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .model-badge {
+    font-size: 10px; color: var(--dim); margin-top: 4px; white-space: nowrap;
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px;
+  }
+  .message { font-size: 12px; color: var(--text); margin-top: 8px; max-height: 3.6em; overflow: hidden; line-height: 1.3; }
+  .meta { font-size: 10px; color: var(--dim); margin-top: 8px; }
+</style>
+<h1>Claude Sessions</h1>
+<div id="empty">No sessions reporting yet. Start (or restart) a Claude Code session in a terminal with the hooks configured.</div>
+<div id="grid"></div>
+<script>
+  const STATUS_LABEL = {
+    needs_input: "Needs input",
+    done: "Finished",
+    working: "Working",
+    closed: "Closed",
+  };
+
+  function timeAgo(ts) {
+    const s = Math.round((Date.now() - ts) / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    return `${Math.round(m / 60)}h ago`;
+  }
+
+  function shortCwd(cwd) {
+    if (!cwd) return "";
+    const home = cwd.match(/^\/Users\/[^/]+/);
+    return home ? cwd.replace(home[0], "~") : cwd;
+  }
+
+  async function focus(session) {
+    if (session.status === "closed") return;
+    if (session.termProgram !== "iTerm.app" || !session.itermSessionId) return;
+    await fetch("/api/focus", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ itermSessionId: session.itermSessionId }),
+    });
+  }
+
+  function render(list) {
+    const grid = document.getElementById("grid");
+    const empty = document.getElementById("empty");
+    empty.style.display = list.length ? "none" : "block";
+
+    // Sort: needs_input first, then done, then working, then closed.
+    const order = { needs_input: 0, done: 1, working: 2, closed: 3 };
+    list.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.updatedAt - a.updatedAt);
+
+    const attention = list.filter((s) => s.status === "needs_input" || s.status === "done").length;
+    document.title = attention > 0 ? `(${attention}) Claude Sessions` : "Claude Sessions";
+
+    grid.innerHTML = "";
+    for (const s of list) {
+      const card = document.createElement("div");
+      card.className = `card ${s.status}`;
+      const canFocus = s.termProgram === "iTerm.app" && s.itermSessionId && s.status !== "closed";
+      card.title = canFocus ? "Click to jump to this window" : "";
+      card.onclick = () => focus(s);
+
+      const label = s.title || shortCwd(s.cwd) || s.sessionId.slice(0, 8);
+
+      card.innerHTML = `
+        <div class="row">
+          <div class="title">${escapeHtml(label)}</div>
+          <div class="status-badge ${s.status}">${STATUS_LABEL[s.status] ?? s.status}</div>
+        </div>
+        <div class="row">
+          <div class="cwd">${escapeHtml(shortCwd(s.cwd))}</div>
+          ${s.modelDisplay ? `<div class="model-badge">${escapeHtml(s.modelDisplay)}</div>` : ""}
+        </div>
+        ${s.lastMessage ? `<div class="message">${escapeHtml(s.lastMessage)}</div>` : ""}
+        <div class="meta">${timeAgo(s.updatedAt)}${canFocus ? " · click to jump" : ""}</div>
+      `;
+      grid.appendChild(card);
+    }
+  }
+
+  function escapeHtml(s) {
+    const div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+  }
+
+  async function tick() {
+    try {
+      const res = await fetch("/api/sessions");
+      render(await res.json());
+    } catch {
+      // server briefly unavailable; keep showing the last known state
+    }
+  }
+
+  tick();
+  setInterval(tick, 2000);
+  // Backgrounded tabs get their timers throttled by the browser, so a
+  // stale render can sit for a while after you switch away and back.
+  // Force a fresh fetch the moment this tab becomes visible again.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") tick();
+  });
+  window.addEventListener("focus", tick);
+</script>

@@ -1,0 +1,7 @@
+{
+  "name": "claude-session-monitor",
+  "private": true,
+  "scripts": {
+    "start": "bun run server.ts"
+  }
+}

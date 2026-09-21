@@ -11,7 +11,24 @@
 set -u
 
 PORT="${CLAUDE_SESSION_MONITOR_PORT:-7317}"
+MONITOR_DIR="$HOME/claude-session-monitor"
 payload="$(cat)"
+
+server_up() {
+  curl -s -m 1 -o /dev/null "http://127.0.0.1:${PORT}/api/sessions"
+}
+
+# Auto-start the monitor on a fresh Claude Code session if it isn't already
+# running. start.sh is idempotent (no-ops if a live pid file exists), so this
+# is safe even if several sessions start at once.
+event_name="$(jq -r '.hook_event_name // empty' <<<"${payload}" 2>/dev/null)"
+if [[ "${event_name}" == "SessionStart" ]] && [[ -x "${MONITOR_DIR}/start.sh" ]] && ! server_up; then
+  "${MONITOR_DIR}/start.sh" >/dev/null 2>&1
+  for _ in 1 2 3 4 5; do
+    server_up && break
+    sleep 0.2
+  done
+fi
 
 find_claude_pid() {
   local pid="$$"

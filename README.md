@@ -11,8 +11,9 @@ check it), blue = working, grey = closed.
 - [Bun](https://bun.sh) installed (`curl -fsSL https://bun.sh/install | bash`).
 - `jq`, `curl` — both ship with macOS or are already on your machine if
   you've used other dev tooling.
-- iTerm2 is optional. Without it you still get full status tracking, just no
-  window title enrichment or click-to-focus (see [Limitations](#limitations)).
+- iTerm2 or Terminal.app unlock window title enrichment and click-to-focus.
+  Any other terminal still gets full status tracking, just without those two
+  bonuses (see [Limitations](#limitations)).
 
 ## Setup
 
@@ -75,9 +76,9 @@ alias stop-session-monitor='cd "$HOME/claude-session-monitor" && ./stop.sh'
   blue = actively working; grey = the session's window closed.
 - **Model badge**: the model that session's last turn ran on (Sonnet 5,
   Opus 5, Haiku 4.5, etc.).
-- **Click a card**: in iTerm2, jumps straight to that window/tab/pane. In any
-  other terminal, clicking does nothing yet — there's no equivalent focus API
-  to hook into.
+- **Click a card**: in iTerm2 or Terminal.app, jumps straight to that
+  window/tab/pane. In any other terminal, clicking does nothing yet — there's
+  no equivalent focus API to hook into.
 - The dashboard tab's browser title shows a `(N)` count of sessions that need
   attention, so you can spot it from a backgrounded tab or the taskbar.
 
@@ -114,14 +115,16 @@ hook script posts to the same port.
 - **"Closed" detection**: the hook script walks the process tree to find the
   long-lived `claude` CLI pid and reports it. The server periodically checks
   that pid with `kill -0` (a POSIX liveness check) — this is what makes
-  "closed" detection terminal-agnostic instead of tied to iTerm2.
-- **iTerm2 bonuses**: when a session reports `TERM_PROGRAM=iTerm.app`, the
-  server also polls iTerm2 over AppleScript for that pane's live tab title,
-  and can select that exact window/tab/pane on click.
+  "closed" detection terminal-agnostic instead of tied to any one terminal
+  app.
+- **iTerm2/Terminal.app bonuses**: when a session reports `TERM_PROGRAM`
+  `iTerm.app` or `Apple_Terminal`, the server also polls that terminal over
+  AppleScript for the pane/tab's live title (matched by iTerm2's session id,
+  or by tty for Terminal.app), and can select that exact window/tab on click.
 
 ## Limitations
 
-- Click-to-focus and rich window titles only work in iTerm2.
+- Click-to-focus and rich window titles only work in iTerm2 and Terminal.app.
 - The model badge reflects the model as of the last completed turn; a
   mid-session `/model` switch won't show until the next turn finishes.
 - Everything is local to one machine — this isn't a shared/team dashboard.

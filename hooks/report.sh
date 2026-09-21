@@ -48,11 +48,25 @@ find_claude_pid() {
 
 claude_pid="$(find_claude_pid || true)"
 
+# Only SessionStart carries a `model` field directly. Every other event can
+# still recover the current model by reading the last assistant turn's
+# recorded model out of the transcript file, so already-running sessions get
+# the badge too, not just ones restarted after this code existed.
+transcript_path="$(jq -r '.transcript_path // empty' <<<"${payload}" 2>/dev/null)"
+model_from_transcript=""
+if [[ -n "${transcript_path}" && -f "${transcript_path}" ]]; then
+  model_from_transcript="$(tail -n 200 "${transcript_path}" 2>/dev/null \
+    | jq -r 'select(.type == "assistant") | .message.model // empty' 2>/dev/null \
+    | tail -1)"
+fi
+
 body="$(jq -c \
   --arg iterm_session_id "${ITERM_SESSION_ID:-}" \
   --arg term_program "${TERM_PROGRAM:-}" \
   --arg claude_pid "${claude_pid:-}" \
-  '. + {iterm_session_id: $iterm_session_id, term_program: $term_program, claude_pid: $claude_pid}' \
+  --arg model_from_transcript "${model_from_transcript:-}" \
+  '. + {iterm_session_id: $iterm_session_id, term_program: $term_program, claude_pid: $claude_pid}
+   | if $model_from_transcript != "" then .model = $model_from_transcript else . end' \
   <<<"${payload}" 2>/dev/null)"
 
 if [[ -n "${body}" ]]; then
